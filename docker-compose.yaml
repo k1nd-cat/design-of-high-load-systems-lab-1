@@ -1,0 +1,100 @@
+services:
+  app-1:
+    build: .
+    image: lab1:local
+    ports:
+      - "8081:8080"
+    environment:
+      POD_ID: "1"
+      DATACENTER: "dc-1"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+
+  app-2:
+    build: .
+    image: lab1:local
+    ports:
+      - "8082:8080"
+    environment:
+      POD_ID: "2"
+      DATACENTER: "dc-2"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.3.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?Set GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+
+  dashboard-generator:
+    image: lab1:local
+    build: .
+    entrypoint:
+      - java
+      - -cp
+      - "/app/classes:/app/lib/*"
+      - ru.k1ndcat.lab1.generator.DashboardGenerator
+    environment:
+      APP_URL: http://app-1:8080
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_ADMIN_USER: ${GRAFANA_ADMIN_USER:?Set GRAFANA_ADMIN_USER}
+      GRAFANA_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD}
+    depends_on:
+      app-1:
+        condition: service_healthy
+      app-2:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+    restart: "no"
+
+  load-generator:
+    build: ./load
+    image: lab1-jmeter:5.6.3
+    command:
+      - -n
+      - -t
+      - /work/load.jmx
+      - -Japp1.host=app-1
+      - -Japp1.port=8080
+      - -Japp2.host=app-2
+      - -Japp2.port=8080
+      - -Jsummariser.interval=10
+    depends_on:
+      app-1:
+        condition: service_healthy
+      app-2:
+        condition: service_healthy
+      dashboard-generator:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  grafana-data:
